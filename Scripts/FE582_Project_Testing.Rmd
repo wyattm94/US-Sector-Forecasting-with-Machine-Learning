@@ -1,0 +1,391 @@
+---
+title: "Clustering Analysis on ETF Trading"
+author: 'Group5: Preeti Bekal, Wyatt Marciniak, Neel Shah'
+date: "May 5, 2018"
+output:
+  html_document:
+    df_print: paged
+tables: yes
+---
+
+- OBJECTIVE: Create a procedure using Kmeans and Hierarchal Clustering Methodolgies to create optimal indicator sets for modeling ETF data.  
+- HOW:       We will be using Linear Models and Decision Trees to create prediction "trading signals" and back test these strategies for profitability
+
+Install/Load packages + Open connection to Functions Source File
+```{r, echo=FALSE, warning=FALSE,include=FALSE,fig.width=5,fig.height=5}
+knitr::opts_knit$set(root.dir  = "C:/FE582/Project")
+library(MASS)
+library(cluster)
+library(fpc)
+library(HSAUR)
+library(NbClust)
+library(useful)
+library(GGally)
+library(amap)
+library(maptree)
+library(broom)
+library(mctest)
+library(car)
+library(rpart.plot)
+library(rattle)
+library(knitr)
+library(ggplot2)
+library(grid)
+library(gridBase)
+library(gridExtra)
+library(tis)
+source("FE582_Project_Functions.R")
+```
+
+- Install applicable libraries and load them into the working directtories.  These libraries give us a very large range of funtionality from model creations and predictions to summaries and outputting methods..
+
+(1) Collect Data and add movement classifications
+```{r, echo=FALSE}
+### Extract Data from Data Script Output
+return.m <- read.csv("monthlyreturns.csv", header = TRUE) ; return.m <- return.m[-1,] # Remove date
+
+## Create testing and training data subsets
+div.train = 73
+div.test  = nrow(return.m) - div.train
+
+train <- return.m[1:div.train,]
+test  <- return.m[(div.train+1):nrow(return.m),]
+
+etf.class.train <- classify.etfs(train, c(5:14))
+etf.class.test  <- classify.etfs(test, c(5:14))
+
+# Isolate Market Indices
+djia  <- test[,2]
+sp500 <- test[,4]
+
+save(train,etf.class.train,test,etf.class.test,djia,sp500, file = "FE582_ProjectData.RData")
+
+# Summary of Data for S.bio
+summary(etf.class.train[[1]])
+
+```
+
+- (1): We have imported our data sets from the Data Script we wrote prior to the analysis. This script collects market index and etf daily data as well as economic indicator data, exchange rate data and interest rate data for US. Treasuries (1 - 30 years).  This data can then be aggregated on a daily, weekly, monthly or quarterly basis.  After the script is read into the environment, we separate it into training and testing subsets.  We will be predicting for 3 years (using roughly 9 years of data to test) from June 2014 - July 2017.  We believe that this time frame will show a fair amount of standard deviation but also put the economy in an more "average" growth period of a bull mark.   
+
+For this project, we are focusing on monthly data returns so that we can better utilize market/economic instruments to predict their price movements. These ETFs are "baskets" that are designed to represent a sector of the market (in our case, but in general ETFs have a wide range of applications.  For our purpose, we are using US Sector ETFs and interpreting them as proxies for actual "actu} act"
+
+- We are limiting the predictors data sets to non-ETF sets because we want to try to capture market effects in the least biased way possible to create a more "pure" indicator strategy.  Allowing the use of ETF data will create multi-colinearity effects in our models and the procedure will be less accurate.  In practice, this additional analysis should be conducted and compared on predidiction accuracy as a baseline but we felt that objective of our projective did not reaire that adddional
+
+
+(2) Analzying Correlation and regression rankings (by abs() size)
+```{r, warning=FALSE }
+## Subset Data for evaluating indicator to ETF correlations
+etf.data <- train      # Remove Date (Useless data for correlation testing)
+etf.data <- etf.data[5:length(etf.data)]  # Subset ETFs + Indicators (Drop Dates and Market Indicators)
+
+# Analyze and create correlation subsets
+obs.cor.all   <- analyze.ranks(etf.data, "All Return Correlations","subset",10, 0.00, top = NULL)
+obs.cor.sub   <- analyze.ranks(etf.data, "Sub Return correlations","subset",10, 0.30, top = NULL, print = TRUE)
+
+save(obs.cor.all, obs.cor.sub, file = "FE582_DataCorrTables.RData")
+
+# Exemple of Ranked objects
+kable(obs.cor.all$df$s.fin, caption = "S.fin ~ Indicators with Correlation >= 0")
+kable(obs.cor.sub$df$s.fin, caption = "S.fin ~ Indicators with Correlation >= 0.30")
+
+
+
+```
+
+- (2): Once the data is prepared, we conduct an intial preparation step of subsetting the data sets by indicator correlations with the taregt ETF.  To do this, we rank the correlations by their absolute values (to establish strength, not direction). We use the '10' to subset the data because it takes only the first 10 rows with all columns after the first 10 with repsect to the correlation and regression tables.  This allows us to isolate only the ETF data (rows) against indicators (columns after 10).  We then subset these orders by the correlation subsets of 0 and 0.3..  0 correlation groups means all the data avaliable and is done to create a base to analyze the clustered models from.  The 30% threshold is set because we want to only take indicators with at least a weak correlation to analyse.  After this step, we now have the first truly filtered daily sets by relationship.  Next, we will use cluster analysis to identify deeper layers of relationships and subset further to create the most optimized models.
+
+
+(3.1) Conduct K-means Clusterng Analysis (Euclidean Distance)
+```{r}
+set.seed(1234)
+max.out = 8
+
+### Prepare Data Set for modelling (transpose training data and remove date and market/etf returns)
+ret <- t(train[,-1]) ; colnames(ret) <- train[,1]
+ret <- ret[14:nrow(ret),]
+
+## Analyze Data to interpret possible clusterings
+pc.wss.analysis(ret, nrow(ret)-1, title = "Monthly Returns")
+test.kmeans(ret, 4, 9, add.labels = TRUE)
+
+# Selected Model (store cluster groups with their tags)
+k = 7 ; k.out <- run.clustering(ret, k, "kmeans", max.elem.out = max.out, add.labels = TRUE)
+
+cluster.k.d <- k.out[[2]]
+
+```
+
+- (3.1): K-means clustering consists of cluster data based on some type of "distance measure" between them (over their value used).  The most common metholody to use is Euclidean Distance, which is the "linear" distance between points in the clusters from other clusters.  The goal here is to identify sime number K clusters the data should fit into and then test those clusters to idenify a truly best K value (number of clusters) the data fits into.  We use the WSS plot to see best ordes by minimizing the Within Sum of Squares deviance and use our with our defined PCA plot and output to see how many principal compenents we need to model x% of accuracy.  We can see 3-5 capture 75-95% of the variance so a 2d plot may suffice.  We see from the WSS plot the best k's to test are from 4 to 8 (where changes in WSS become minimal by adding more k's).  After testing (shown above) we select 7 clusters for this model.  The plot looks a little off but that is due to the number of P.C. we need.  The contents, however, seem to make sense based on our data sets. 
+
+We will run 3 more clustering/ordering models to extract different behavior classification types (by clusters) and use the corresponding cluster tags (groups) to filter our correlation filtered data to attempt to create optimized models.
+
+- Just like for correlation filtering, we use only indicator data sets here.
+
+
+
+(3.2) Conduct Hierarchal Clustering (Euclidean Distance)
+```{r}
+set.seed(1234)
+
+### Prepare Data Set for modelling (distance matrix and intial model for order plot analysis)
+d  <- dist(ret)
+hc <- hclust(d, method = "complete")
+
+## Analyze Data to interpret possible clusterings
+op_k.d <- kgs(hc, d, maxclust = nrow(ret)-1) # Min = optimal clusters (k)
+plot(names(op_k.d), op_k.d, main = "Returns KGS Penalty Function for hierarchal clustering")
+
+test.hc(d, 4, 8)
+
+# Selected Model (store ordered groups with their tags)
+k = 8 ; k.out <- run.clustering(d, k, "hc", max.elem.out = max.out)
+
+cluster.h.d <- k.out[[2]]
+
+```
+
+- (3.2): Hierarchal Clustering analalysis works differntly from K-means in that it looks to see at when (height of tree to root) the data types were grouped.  The branches and their meeting poitns show distance and grouping points and the nodes (leaves) are the variables being analyzed.  We can use the KGS (Kelley-Gardner-Sutcliffe penalty function) to identify on the constructed tree where the "pruning" should take place.  These "groups" or "pruned leaves" are identified minimized penalties (min of function).  We test prunings of 4 to 8 and after analysis, 8 groups were ideal.  This analysis is very similair to Kmeans testting, but the tree visualization is much easier to interpret regardless of PCA reuslts.  The contents of the groups make sense after the testing as we will use these paramaters for this analysis technique.
+
+
+
+(3.3) Conduct K-means Clusterng Analysis (Corr-dist)
+```{r}
+set.seed(1234)
+
+### Prepare Data Set for modelling (transpose training data and create a correlation matrix)
+ret.c <- data.frame(t(ret))
+ret.c <- cor.agg(ret.c)
+
+## Analyze Data to interpret possible clusterings
+pc.wss.analysis(ret.c, nrow(ret.c)-1, title = "Monthly Returns Correlation")
+test.kmeans(ret.c, 3, 10, add.labels = TRUE)
+
+# Selected Model (store cluster groups with their tags)
+k = 8 ; k.out <- run.clustering(ret.c, k, "kmeans", max.elem.out = max.out, add.labels = TRUE)
+
+cluster.k.c <- k.out[[2]]
+
+```
+
+- (3.3): The next 2 tests are using the same kmeans and hierarcahcal clustering models as before but now we are analyzing the behaviors of the indicators by the distance between correlation coefficients of the data.  The goal is to analyse a wider spectrum of possibilites for predictions and back testing.  The PCA analysis looks better here and we test 3 - 10 clusters though the WSS plot did not offer us much clairty.  Lower level clusters seemed to look good but the visualization analysis shows us that there are many variables spread out and more clusters will be need.  Here is an example of how testng many models and creating a more automated procedure is a viable next step as these analysis techniues are open to interpretation. After much debate, we choose 8 clusters.  The content analysis has changed but the grouoings are not bad and make sense under different scenarios of market conditions.   
+
+
+
+(3.4) Conduct Hierarchal Clustering (Corr. dist))
+```{r}
+set.seed(1234)
+
+### Prepare Data Set for modelling (Create a disimilarity matrix of the variable correlations)
+diss = 1 - abs(ret.c) # /corr/ becasue some correlations are negative
+dist = as.dist(diss)
+
+hc   = hclust(dist, method = "complete")
+
+## Analyze Data to interpret possible clusterings
+op_k.c <- kgs(hc, dist, maxclust = nrow(ret.c)-1) # Min = optimal clusters (k)
+plot(names(op_k.c), op_k.c, main = "Correlation KGS Penalty Function for hierarchal clustering") 
+
+test.hc(dist, 5, 10)
+
+# Selected Model (store ordered groups with their tags)
+k = 10 ; k.out <- run.clustering(dist, k, "hc", max.elem.out = max.out)
+
+cluster.h.c <- k.out[[2]]
+
+save(cluster.k.d, cluster.k.c, cluster.h.d, cluster.h.c, file = "FE582_ProjectClusters.RData")
+
+```
+
+- (3.4): The Hierarchal Clustering analysis for correlated data showed us good results.  As explained before, we pick the best clusters and prune the tree to identify the the optimal analysis.  After selecting 5 - 10 prunes, we selected 10 as the best model.  There are many free floating compoenents here, as well clear groupings of FX rates and USt rates.  This analysis is good and we now move on to putting these subsets to the test.
+
+
+(4) Create Final Data Subsets for each ETF based on the 4 classification methods (4x10 models)
+```{r}
+# Create Clustered Data Sets across cluster groupings and within cluster correlation testing
+clustered.data.all <- create.subs(obs.cor.all, cluster.k.d, cluster.h.d, cluster.k.c, cluster.h.c, etf.class.train)
+clustered.data.sub <- create.subs(obs.cor.sub, cluster.k.d, cluster.h.d, cluster.k.c, cluster.h.c, etf.class.train)
+
+print(noquote(paste("Data filtered per Cluster Technique per ETF i.e. (",paste(names(clustered.data.sub$s.energy$kd),collapse=", "),")",sep="")))
+
+save(clustered.data.all, clustered.data.sub, file = "FE582_ClusteredDataSets.RData")
+
+```
+
+- (4): After the 4 clustering analyses are complete, the data needs to be filtered a second time and aggregated into a large data structure where for each ETF we store the relevant ETF value, classification factor and indicator data sets.  The filtering is conducted by taking each cluster group for the current ETF and cluster technique used and selecting the most highly correlated elements from each seperate cluster.  Then, if there are remianing memebrs in the same cluster, they are evaluated for their correlation with the chosen elem.  If their correlation < 0.5, we keep these elems as well (le thn 50% correlation is the maximum threshold that is reasonabl allowed in Collinarity and redundancy testing that we have reserahced.  These are done grouped by the cluster tags (clusters defined in analysis) so that we can build models across the ETFs awith repsect to the subsets dictated by the clusters.
+
+- All data analysis is complete for model consruction.  We will now build, predict and backtest our models to see how our hypothsis holds.
+
+
+
+(5.1) Build Multi-Variate Linear Regression Models
+```{r}
+# Build the Linear Models
+models.lm.list.all <- build.lm(clustered.data.all, etf.class.train, sum = FALSE)
+models.lm.list.sub <- build.lm(clustered.data.sub, etf.class.train, sum = FALSE)
+
+# Glimpse at models
+summary(models.lm.list.sub$s.hc$hd)
+summary(models.lm.list.all$s.hc$hd)
+
+save(models.lm.list.all, models.lm.list.sub, file = "FE582_LinearModels.RData")
+
+```
+
+- (5.1): The Multivariate Linear models are constructed in an automated function.  The linear models are built for each cluster technique (x5) used for each ETF (x10) target acorss both correlation types (x2) and 2 model techniques (Linear Modelling and Descion trees) (x2).  Overall, that means that 200 models are made and tested for each prediction model type.  Above, we can see the model summaries for the S.hc ETF using data clustered by hierarchal clusterings.  The model made with the non-subsets correlation seems to have a better model fit but the significne of the terms is waning in the model made with no intial correlation sgubsetting.  The models are stored for predictions.
+
+
+
+(5.2) Predict using the Linear Models
+```{r}
+## Generate the predictions on the testing sets with directional movement classifications
+pred.out <- pred.lm(models.lm.list.all, etf.class.test)
+models.lm.all.pred <- pred.out[[1]]
+models.lm.all.comp <- pred.out[[2]]
+
+pred.out <- pred.lm(models.lm.list.sub, etf.class.test)
+models.lm.sub.pred <- pred.out[[1]]
+models.lm.sub.comp <- pred.out[[2]]
+
+save(models.lm.all.pred,models.lm.all.comp,models.lm.sub.pred,models.lm.sub.comp, file = "FE582_LMPredictions.RData")
+
+# Glimpse at Model Accuracies for predicting on the data sets
+kable(data.frame(models.lm.all.comp,"Mean"=rowMeans(models.lm.all.comp)), caption = "LR models, correlation > 0.00")
+kable(data.frame(models.lm.sub.comp,"Mean"=rowMeans(models.lm.sub.comp)), caption = "LR models, correlation >= 0.30")
+
+```
+
+- (5.2): Here we simply predict the classification results and compare them t the actual reusult of the market.  This gets us an accuracy Matrix that allows us to take a look at the performance of the clusters against each other and the clustered groups againstg the "FULL DATA" testing study.  From this intial analysis, we conlcude that subsetting the data by correlation >= 0.30 had little effect on the overall accuracry of the clustering techniques.  This can also be said for comparing the full model testing accuracy to the the clustered tests.  The RowMeans() column to the right of the matrices shows the agreggate results are faily close.  When we look at the individual accuracies, we see that the Energy and Materials sectors showed the most correct prediciton clalcuations wuth Tech not too far behind.  For the Healthcare setctor, the accuracy for using all data with a Hierarchal Clusterng Model was 55%, but the subset equivalent accuracy was 75%.  That seems to be an outlier here.  For the linear models, it would seem that subsetting the data or using clustering models tend to do worse than the models using more intial data.  This makes sense when we think about how stepwise functions operate as well as the numerous tests needed to verify best orders.  With that said, we need to analyze the market performance in the back testing stage.
+
+
+
+(6.1) Construct Decision Trees
+```{r}
+# Build the Decision Trees
+models.dt.list.all <- build.dt(clustered.data.all, etf.class.train, FALSE, FALSE)
+models.dt.list.sub <- build.dt(clustered.data.sub, etf.class.train, FALSE, FALSE)
+
+# Inspect Trees
+prp(models.dt.list.sub$s.hc$kc)
+prp(models.dt.list.sub$s.energy$fulldata)
+
+models.dt.list.sub$s.cd$kd$variable.importance
+
+save(models.dt.list.all,models.dt.list.sub, file = "FE582_DecisionTreeModels.RData")
+
+```
+
+- (6.1): Creating the decision tree using rpart() was a very familiar procedure to building the linear models.  The trees are built on the the correlation and cluster subset datsets. The majority of the trees are very small, only 2 or 3 leaves maximum.  We have shown some small examples if the trees and the variable importance results from the a tree built using Kmean Distance with corr. subset data.  The treescuse factor tests to evaluate splitting points for data based on 'yes'/'no' in terms of a connditional (numeruical or classification) decision.  These models are good ones to use becuase they can evaluate factors and data to create paths to follow.  In the real world, tree models can be very useful to keep growing as the values or the conditions chnage.  The models hvave been stored for predictions.
+
+(6.2) Predict using the Descion Trees
+```{r}
+## Generate the predictions on the testing sets with directional movement classifications
+pred.out <- pred.dt(models.dt.list.all, etf.class.test)
+models.dt.all.pred <- pred.out[[1]]
+models.dt.all.comp <- pred.out[[2]]
+
+pred.out <- pred.dt(models.dt.list.sub, etf.class.test)
+models.dt.sub.pred <- pred.out[[1]]
+models.dt.sub.comp <- pred.out[[2]]
+
+save(models.dt.all.pred,models.dt.all.comp,models.dt.sub.pred,models.dt.sub.comp, file = "FE582_DTPredictions.RData")
+
+# Glimpse at Model Accuracies for predicting on the data sets
+kable(data.frame(models.dt.all.comp,"Mean"=rowMeans(models.dt.all.comp)), caption = "DT models, correlation > 0.00")
+kable(data.frame(models.dt.sub.comp,"Mean"=rowMeans(models.dt.sub.comp)), caption = "DT models, correlation >= 0.30")
+
+```
+
+- (6.2): The Decision Tree Predicitions immediately stand out because the averages of the rows show us thatg the Kmeans and Hierarchal clusterting techniques using Euclidean Distance (not correlation) seemd to clearly outporm by looking at the averages of the models, but the best ETFs to model were Energy, Consumer Discrtionary and Tech for these models.  The Full Data models in these cases seemed to far worse than the Full Data models in the Linear models case.  These accuracy analyses have shown us thst the decision trees may be better performing models and models built with 1 of the 4 actual modelling techniques tend to do better as well than 
+
+
+(7) Conduct Backtesting on testing data sets
+```{r}
+### Set Capital for test (split evenly among ETFs in back testing)
+capital = 10000000  
+
+## Run back tests on the "base" portfolios (Holding the market and holding (long) a basket of all 10 etfs) 
+sim.djia  <- sim.hold(djia, "vector", "DJIA Index", capital, print.sum = TRUE)
+sim.sp500 <- sim.hold(sp500, "vector", "SP500 Index", capital, print.sum = TRUE)
+sim.etfs  <- sim.hold(etf.class.test, "list", "Holding Long all (10) Sector ETFs", 
+                      list.loc = 2, add.cum = TRUE, capital, print.sum = TRUE, print.all = TRUE)
+
+# Run back tests on Linear Models and Decision Trees
+sim.lm.all <- pred.sim(models.lm.all.pred, etf.class.test, "ETF Linear Models (abs(Cor) >= 0)", capital)
+sim.lm.sub <- pred.sim(models.lm.sub.pred, etf.class.test, "ETF Linear Models (abs(Cor) >= 0.30)", capital)
+sim.dt.all <- pred.sim(models.dt.all.pred, etf.class.test, "ETF Decision Tree Models (abs(Cor) >= 0)", capital)
+sim.dt.sub <- pred.sim(models.dt.sub.pred, etf.class.test, "ETF Decision Tree Models (abs(Cor) >= 0.30)", capital)
+
+save(sim.djia,sim.sp500,sim.etfs, file = "FE582_BacktestsBaseLine.RData")
+save(sim.lm.all,sim.lm.sub,sim.dt.all,sim.dt.sub, file = "FE582_BacktestsModels.RData")
+
+```
+
+- All model output has been aggregated into a very large data structure with predicitons, accuracies and confuision matrices, etc...  We will use some of this to better compare the performance of our models as well move from accuracy to return percentages, which is the truly determinat factor of model success.  Before we do that, we can see above that based on our modelling techniques, over the testing period of 3 years (36 months), all clustering and correlation subset variant models outperformed market portfolios.  The backtests for cumulative returns were conducted by Model Type and Cluster Type, meaning that 20 out of 20 portfolios constructed outperformred the Dow Jones Industrial Avverage, SP500 and the long portfolio for the 10 ETFS.
+
+
+(8) More  Indepth Model Comparsion
+```{r, warning = FALSE, echo =TRUE}
+source("FE582_Project_Functions.R")
+
+capital = 10000000 
+
+model.p <- list(lm.all=models.lm.all.pred,dt.all=models.dt.all.pred,lm.sub=models.lm.sub.pred,dt.sub=models.dt.sub.pred)
+model.c <- list(lm.all=models.lm.all.comp,dt.all=models.dt.all.comp,lm.sub=models.lm.sub.comp,dt.sub=models.dt.sub.comp)
+model.s <- list(lm.all=sim.lm.all,        dt.all=sim.dt.all,        lm.sub=sim.lm.sub,        dt.sub=sim.dt.sub)
+
+full.comp.data <- cum.dat(model.p, model.c, model.s, etf.class.test, capital, print = FALSE)
+
+save(full.comp.data, file = "FE582_ComparableModelResults.RData")
+
+lma.comp <- full.comp.data$indcomp$lm.all$cumbycluster
+lms.comp <- full.comp.data$indcomp$lm.sub$cumbycluster
+
+dta.comp <- full.comp.data$indcomp$dt.all$cumbycluster
+dts.comp <- full.comp.data$indcomp$dt.sub$cumbycluster
+
+
+
+```
+
+
+(8) Analyze Linear Models and Descion Trees against each other and the clustered models 
+```{r}
+### Compare Performance of Cumulative returns
+
+kable(full.comp.data$cumperf$performance, caption = "Cluster By ETF MODEL Comparision")
+
+## Performance:
+
+# Linear Models
+kable(lma.comp$performance,  caption = "performance  Table - LM (Corr >= 0)")
+kable(lms.comp$performance,  caption = "performance n Table - LM (Corr >= 0.30)")
+
+# Decision Trees 
+kable(dta.comp$performance, caption = "performance  Table - DT (Corr >= 0)")
+kable(dts.comp$performance, caption = "performance  Table - DT (Corr >= 0.30)")
+
+## Performance:
+
+# Linear Models
+kable(lma.comp$confusion,   caption = "Confusion Table - LM (Corr >= 0)")
+kable(lms.comp$confusion,   caption = "Confusion Table - LM (Corr >= 0.30)")
+
+# Decision Trees 
+kable(dta.comp$confusion,   caption = "Confusion Table - DT (Corr >= 0)")
+kable(dts.comp$confusion,   caption = "Confusion Table - DT (Corr >= 0.30)")
+
+
+### Compare Accuracies of each model 
+kable(lma.comp$acctable,    caption = "Accuracy - LM (Corr >= 0)")
+kable(lms.comp$acctable,    caption = "Accuracy - LM (Corr >= 0)")
+
+```
+
+- Following the results of the backtest, we have made a cumulative return matrix and out put it with kable() and the confusion matrices for the correponding model types uesd.  A few important conclusions here are that up movements make uo ~ 60% of price movements.  The majority of the models tested showed (based on their confusion table) that they had troube predicting these moves.  The worst affected were the Decision Tree models.  The average error rates accross the models and clusters was 31% to 39%.  This is important becuase as well look at the models accuracies vs. their returns we can see that accuracy and returns are obviously correlated but the confusion matrices reveal how this is poition dependant.  Therefore, these market risks and model risks need to be addressed to improve the models.  In conclusion, however, our results show that over a 36 month period, we were able have all of our models outperform the market.  The cluserting analysis showed promise as a data filtering procedure and Decision Tree models also show potential to help advance this strategy into a more dynamic asset allocation tool.
+
+
+
+
+
+
+
